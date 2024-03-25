@@ -71,8 +71,9 @@ assert len(check_item_list) == len(check_item_index_dict) == check_item_num
 saving_all_key = "豁免"
 attack_all_key = "攻击"
 ability_all_key = "属性"
-ext_item_list = check_item_list + [saving_all_key, attack_all_key, ability_all_key]
-ext_item_num = check_item_num + 3
+Jack_of_All_Trades = "万事通"
+ext_item_list = check_item_list + [saving_all_key, attack_all_key, ability_all_key, Jack_of_All_Trades]
+ext_item_num = check_item_num + 4
 
 ext_item_index_dict = dict(list((k, i) for i, k in enumerate(ext_item_list)))
 assert len(ext_item_list) == len(ext_item_index_dict) == ext_item_num
@@ -224,7 +225,7 @@ class AbilityInfo(JsonObject):
         is_skill: bool = check_name in skill_list  # 计算技能检定时 会 叠加基础属性的额外加值与优劣势
         is_saving: bool = check_name in saving_list  # 计算豁免检定时 不会 叠加基础属性的额外加值与优劣势
         is_attack: bool = check_name in attack_list  # 计算攻击检定时 不会 叠加基础属性的额外加值与优劣势
-        is_ability: bool = check_name in ability_list  # 计算攻击检定时 不会 叠加基础属性的额外加值与优劣势
+        is_ability: bool = check_name in ability_list  
 
         check_index = check_item_index_dict[check_name]
         parent_index = -1
@@ -237,13 +238,16 @@ class AbilityInfo(JsonObject):
 
         # 计算熟练加值
         prof_bonus = self.check_prof[check_index] * self.get_prof_bonus()
-        if self.check_prof[check_index] == 0:
+        if self.check_prof[check_index] == 0 and ext_item_index_dict[Jack_of_All_Trades] == 0:
             hint_str += f"无熟练加值 "
+        elif self.check_prof[check_index] == 0 and ext_item_index_dict[Jack_of_All_Trades] != 0 and (is_ability or is_skill):
+            prof_bonus = self.get_prof_bonus()//2
+            hint_str += f"万事通加值:{prof_bonus} "
         elif self.check_prof[check_index] == 1:
             hint_str += f"熟练加值:{prof_bonus} "
         else:
             hint_str += f"熟练加值:{self.get_prof_bonus()}*{self.check_prof[check_index]} "
-        prof_bonus_str: str = ""
+            prof_bonus_str: str = ""
         if prof_bonus != 0:
             prof_bonus_str = "+" + str(prof_bonus) if prof_bonus > 0 else str(prof_bonus)
 
