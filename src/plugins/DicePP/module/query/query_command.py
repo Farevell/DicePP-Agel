@@ -24,6 +24,7 @@ from module.query.query_database import CONNECTED_QUERY_DATABASES, DATABASE_CURS
 
 LOC_QUERY_RESULT = "query_result"
 LOC_QUERY_SINGLE_RESULT = "query_single_result"
+LOC_QUERY_SINGLE_RESULT_NOBOOK = "query_single_result_nobook"
 LOC_QUERY_MULTI_RESULT = "query_multi_result"
 LOC_QUERY_MULTI_RESULT_ITEM = "query_multi_result_item"
 LOC_QUERY_MULTI_RESULT_PAGE = "query_multi_result_page"
@@ -328,6 +329,9 @@ class QueryCommand(UserCommandBase):
         reg_loc(LOC_QUERY_SINGLE_RESULT, "{keyword} {en_keyword}{tag}\n{content}{book}{redirect}",
                 "查询找到唯一条目, keyword: 条目名称, en_keyword: 条目英文名, content: 词条内容"
                 ", book: 来源*, redirect: 重定向自*, tag: 换行+标签*  (*如果有则显示, 没有则忽略)")
+        reg_loc(LOC_QUERY_SINGLE_RESULT_NOBOOK, "{keyword} {en_keyword}{tag}\n{content}{redirect}",
+                "查询找到唯一条目，且没有来源的回复, keyword: 条目名称, en_keyword: 条目英文名, content: 词条内容"
+                ", redirect: 换行+重定向自*, tag: 换行+标签*  (*如果有则显示, 没有则忽略)")
         reg_loc(LOC_QUERY_MULTI_RESULT_CATALOGUE, "请选择一个分类",
                 "查询找到多个条目时选择分类的文本提示")
         reg_loc(LOC_QUERY_MULTI_RESULT_PAGE, "{page_cur}/{page_total}页, -上一页/下一页+",
@@ -1296,17 +1300,25 @@ class QueryCommand(UserCommandBase):
         # 最基本的单条目返回文本
         item_content = item.data_content if item.data_content else "[内容为空，等待热心小编补充]"
         item_tag = "\n" + item.data_tag if (item.data_tag and not item.data_tag.startswith("/")) else ""
-        item_book = self.format_loc(LOC_QUERY_CELL_BOOK, book=item.data_from) if item.data_from else ""
         item_redirect = self.format_loc(LOC_QUERY_CELL_REDIRECT, redirect=item.redirect_by) if item.redirect_by else ""
-        return self.format_loc(LOC_QUERY_SINGLE_RESULT, keyword=item.data_name, en_keyword=item.data_name_en, content=item_content, tag=item_tag, book=item_book, redirect=item_redirect)
+        if item.data_from:
+            item_book = self.format_loc(LOC_QUERY_CELL_BOOK, book=item.data_from)
+            return self.format_loc(LOC_QUERY_SINGLE_RESULT, keyword=item.data_name, en_keyword=item.data_name_en, content=item_content, tag=item_tag, book=item_book, redirect=item_redirect)
+        else:
+            item_book = ""
+            return self.format_loc(LOC_QUERY_SINGLE_RESULT_NOBOOK, keyword=item.data_name, en_keyword=item.data_name_en, content=item_content, tag=item_tag, book=item_book, redirect=item_redirect)
 
     def format_item_redirects_feedback(self, item: QueryData) -> str:
         # 最基本的单条目返回文本
         item_content = item.data_content if item.data_content else "[内容为空，等待热心小编补充]"
         item_tag = "\n" + item.data_tag if (item.data_tag and not item.data_tag.startswith("/")) else ""
-        item_book = self.format_loc(LOC_QUERY_CELL_BOOK, book=item.data_from) if item.data_from else ""
         item_redirect = self.format_loc(LOC_QUERY_CELL_REDIRECT, redirect=item.redirect_by) if item.redirect_by else ""
-        return self.format_loc(LOC_QUERY_SINGLE_RESULT, keyword=item.data_name, en_keyword=item.data_name_en, content=item_content, tag=item_tag, book=item_book, redirect=item_redirect)
+        if item.data_from:
+            item_book = self.format_loc(LOC_QUERY_CELL_BOOK, book=item.data_from)
+            return self.format_loc(LOC_QUERY_SINGLE_RESULT, keyword=item.data_name, en_keyword=item.data_name_en, content=item_content, tag=item_tag, book=item_book, redirect=item_redirect)
+        else:
+            item_book = ""
+            return self.format_loc(LOC_QUERY_SINGLE_RESULT_NOBOOK, keyword=item.data_name, en_keyword=item.data_name_en, content=item_content, tag=item_tag, book=item_book, redirect=item_redirect)
 
     @staticmethod
     def format_items_list_feedback(items: List[QueryData],start_index: int = 0):
