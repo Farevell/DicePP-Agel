@@ -8,7 +8,7 @@ from random import choice
 from utils.logger import dice_log, get_exception_info
 from utils.time import str_to_datetime, get_current_date_str, get_current_date_raw, int_to_datetime
 from core.localization import LocalizationManager, LOC_GROUP_ONLY_NOTICE, LOC_PERMISSION_DENIED_NOTICE, LOC_FRIEND_ADD_NOTICE, LOC_GROUP_EXPIRE_WARNING
-from core.config import ConfigManager, CFG_COMMAND_SPLIT, CFG_MASTER, CFG_FRIEND_TOKEN, CFG_GROUP_INVITE
+from core.config import ConfigManager, CFG_COMMAND_SPLIT, CFG_MASTER, CFG_FRIEND_TOKEN, CFG_GROUP_INVITE, CFG_GROUP_JOIN_AUTO_AGREE
 from core.config import CFG_DATA_EXPIRE, CFG_USER_EXPIRE_DAY, CFG_GROUP_EXPIRE_DAY, CFG_GROUP_EXPIRE_WARNING,\
     CFG_WHITE_LIST_GROUP, CFG_WHITE_LIST_USER, CFG_ADMIN, CFG_MASTER, preprocess_white_list
 from core.config import BOT_DATA_PATH, CONFIG_PATH
@@ -24,7 +24,7 @@ from core.statistics import MetaStatInfo, GroupStatInfo, UserStatInfo
 from core.bot.macro import BotMacro, MACRO_PARSE_LIMIT
 from core.bot.variable import BotVariable
 
-NICKNAME_ERROR = "UNDEF_NAME"
+NICKNAME_ERROR = "无名氏"
 
 
 # noinspection PyBroadException
@@ -446,12 +446,14 @@ class Bot:
     def process_request(self, data: RequestData) -> Optional[bool]:
         """处理请求"""
         if isinstance(data, FriendRequestData):
+            # 其他人添加骰娘为好友
             passwords: List[str] = self.cfg_helper.get_config(CFG_FRIEND_TOKEN)
             passwords = [password.strip() for password in passwords if password.strip()]
             comment: str = data.comment.strip()
             return not passwords or comment in passwords
         elif isinstance(data, JoinGroupRequestData):
-            should_allow: int = int(self.cfg_helper.get_config(CFG_GROUP_INVITE)[0])
+            # 其他人尝试加入骰娘为管理员的群
+            should_allow: int = int(self.cfg_helper.get_config(CFG_GROUP_JOIN_AUTO_AGREE)[0])
             return should_allow == 1
         elif isinstance(data, InviteGroupRequestData):
             should_allow: int = int(self.cfg_helper.get_config(CFG_GROUP_INVITE)[0])
@@ -518,19 +520,28 @@ class Bot:
             user_id: 账号
             group_id: 群号, 为空代表默认
         """
-        if not group_id:
-            group_id = "default"
+        nickname = ""
 
-        try:
-            nickname = self.data_manager.get_data(DC_NICKNAME, [user_id, group_id])  # 使用用户在群内的昵称
-        except DataManagerError:
+        if group_id:
+            try:
+                nickname = self.data_manager.get_data(DC_NICKNAME, [user_id, group_id])  # 使用用户在群内设定的昵称
+            except DataManagerError:
+                nickname = ""
+        
+        if nickname == "":
             try:
                 nickname = self.data_manager.get_data(DC_NICKNAME, [user_id, "default"])  # 使用用户定义的默认昵称
             except DataManagerError:
-                try:
-                    nickname = self.data_manager.get_data(DC_NICKNAME, [user_id, "origin"])  # 使用用户本身的用户名
-                except DataManagerError:
-                    nickname = NICKNAME_ERROR
+                nickname = ""
+        
+        if nickname == "":
+            try:
+                nickname = self.data_manager.get_data(DC_NICKNAME, [user_id, "origin"])  # 使用用户本身的用户名
+            except DataManagerError:
+                nickname = ""
+        
+        if nickname == "":
+            nickname = NICKNAME_ERROR # 使用出错情况下的用户名
         return nickname
 
     def update_nickname(self, user_id: str, group_id: str = "", nickname: str = ""):

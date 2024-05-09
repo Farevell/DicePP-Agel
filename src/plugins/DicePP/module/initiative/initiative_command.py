@@ -5,11 +5,12 @@ from core.data import DataManagerError
 from core.command.const import *
 from core.command import UserCommandBase, custom_user_command
 from core.command import BotCommandBase, BotSendMsgCommand
-from core.communication import MessageMetaData, PrivateMessagePort, GroupMessagePort
+from core.communication import MessageMetaData, PrivateMessagePort, GroupMessagePort, preprocess_msg
 from module.roll import RollResult, RollExpression, preprocess_roll_exp, parse_roll_exp, RollDiceError, is_roll_exp, sift_roll_exp_and_reason
 
 from module.initiative.initiative_list import DC_INIT, InitList, InitiativeError
 from module.initiative.initiative_entity import InitEntity
+from module.initiative.battleroll_command import LOC_BR_ROUND_SHOW
 from utils.string import match_substring
 
 LOC_INIT_ROLL = "initiative_roll"
@@ -17,6 +18,7 @@ LOC_INIT_INFO = "initiative_info"
 LOC_INIT_INFO_NOT_EXIST = "initiative_info_not_exist"
 LOC_INIT_ENTITY_NOT_FOUND = "initiative_entity_not_found"
 LOC_INIT_ENTITY_VAGUE = "initiative_entity_vague"
+LOC_INIT_ENTITY_TEN_PLACEHOLDERS = "initiative_entity_ten_placeholders"
 LOC_INIT_ENTITY_REPEAT = "initiative_entity_repeat"
 LOC_INIT_ENTITY_SAME = "initiative_entity_same"
 LOC_INIT_ENTITY_SAME_LIST = "initiative_entity_same_list"
@@ -24,6 +26,7 @@ LOC_INIT_ENTITY_FIRST = "initiative_entity_first"
 LOC_INIT_ENTITY_SWAP = "initiative_entity_swap"
 LOC_INIT_INFO_CLR = "initiative_info_clear"
 LOC_INIT_INFO_DEL = "initiative_info_delete"
+LOC_INIT_INFO_DEL_THIS_TURN = "initiative_info_delete_this_turn"
 LOC_INIT_UNKNOWN = "initiative_unknown_command"
 LOC_INIT_ERROR = "initiative_error"
 
@@ -52,14 +55,17 @@ class InitiativeCommand(UserCommandBase):
                                          "已清除先攻列表",
                                          ".init clr返回的语句")
         bot.loc_helper.register_loc_text(LOC_INIT_ENTITY_NOT_FOUND,
-                                         "先攻里没有{name}",
-                                         "使用.init del删除不存在的条目时返回")
+                                         "先攻里不存在",
+                                         "使用.init指令选择不存在的条目时返回")
         bot.loc_helper.register_loc_text(LOC_INIT_ENTITY_VAGUE,
-                                         "Input entity name {name} is vague, possible {name_list}",
-                                         "使用.init del删除的条目存在歧义 {name_list}:所有匹配的结果")
+                                         "存在多种可能的结果：{name_list}",
+                                         "使用.init指令选择的条目存在歧义 {name_list}:所有匹配的结果")
         bot.loc_helper.register_loc_text(LOC_INIT_ENTITY_REPEAT,
                                          "你重复投掷了先攻",
                                          "重复投掷先攻时的提示")
+        bot.loc_helper.register_loc_text(LOC_INIT_ENTITY_TEN_PLACEHOLDERS,
+                                         "{name}A\n{name}B\n{name}C\n{name}D\n{name}E\n{name}F\n{name}G\n{name}H\n{name}I\n{name}J",
+                                         "进行一次性多单位投掷时，为每个生物名称添加的变化。注意，每个必须是正好10行，不能多不能少。")
         bot.loc_helper.register_loc_text(LOC_INIT_ENTITY_SAME,
                                          "出现相同先攻值，请DM来决定由谁先行动，若不决定将保持默认顺序：",
                                          "出现相同先攻值时的提示")
@@ -74,14 +80,17 @@ class InitiativeCommand(UserCommandBase):
                                          "互换两个对象的先攻值与位置 {name1}与{name2}:互换对象")
         bot.loc_helper.register_loc_text(LOC_INIT_INFO_DEL,
                                          "已从先攻列表中移除 {entity_list}",
-                                         ".init del返回的语句")
+                                         ".init del [目标名称]删除目标后返回的语句")
+        bot.loc_helper.register_loc_text(LOC_INIT_INFO_DEL_THIS_TURN,
+                                         "已从先攻列表中移除本回合的参战者 {entity}",
+                                         ".init del不带任何目标时，删除本回合条目时返回的语句")
         bot.loc_helper.register_loc_text(LOC_INIT_UNKNOWN,
-                                         "Your sub-command {invalid_command} is unclear," +
-                                         " available sub-commands are {sub_command_list}",
+                                         "子指令{invalid_command}无效," +
+                                         "可用子指令如下：{sub_command_list}",
                                          ".init 后面跟的子指令无效, {invalid_command}:用户输入的指令;" +
                                          " {sub_command_list}:当前所有可用的子指令")
         bot.loc_helper.register_loc_text(LOC_INIT_ERROR,
-                                         "Error occurs when performing initiative command. {error_info}",
+                                         "进行先攻或先攻掷骰指令时出现问题： {error_info}",
                                          "处理.init或.ri指令时出现问题 {error_info}:错误信息")
 
     def can_process_msg(self, msg_str: str, meta: MessageMetaData) -> Tuple[bool, bool, Any]:
@@ -101,7 +110,7 @@ class InitiativeCommand(UserCommandBase):
         feedback: str = ""
         if msg_str.startswith(".ri"):
             mode = "roll"
-            arg_str = msg_str[3:].strip()
+            arg_str = meta.plain_msg[3:].strip()
         elif msg_str.startswith(".init") or msg_str.startswith(".先攻"):
             if msg_str.startswith(".先攻"):
                 arg_str = msg_str[3:].strip()
@@ -120,9 +129,9 @@ class InitiativeCommand(UserCommandBase):
             elif arg_str.startswith("刪除"):
                 mode = "delete"
                 arg_str = arg_str[2:]
-            elif arg_str.startswith("first"):
+            elif arg_str.startswith("fst"):
                 mode = "first"
-                arg_str = arg_str[5:]
+                arg_str = arg_str[3:]
             elif arg_str.startswith("提前"):
                 mode = "first"
                 arg_str = arg_str[2:]
@@ -140,7 +149,7 @@ class InitiativeCommand(UserCommandBase):
                 arg_str = arg_str[2:]
             else:
                 feedback = self.format_loc(LOC_INIT_UNKNOWN, invalid_command=arg_str,
-                                           sub_command_list=["list/列表", "clr/清除", "del/刪除","first/提前","swap/交换","import/导入"])
+                                           sub_command_list=["list/列表", "clr/清除", "del/刪除","fst/提前","swap/交换","import/导入"])
                 return [BotSendMsgCommand(self.bot.account, feedback, [port])]
         else:
             return [
@@ -200,25 +209,27 @@ class InitiativeCommand(UserCommandBase):
             name_dict: Dict[str, RollResult] = {}
             for n in name.split("/"):  # 对于 .ri 地精/大地精 这种情况
                 n = n.strip()
+                advantage = n.endswith("优势") or n.endswith("優勢")
+                disadvantage = n.endswith("劣势") or n.endswith("劣勢")
 
                 final_exp_str = exp_str  # 处理 .ri 地精+1/地精优势这种情况
-                if ("优势" in n and not n.startswith("优势")) or ("劣势" in n and not n.startswith("劣势")):  # 处理额外优劣势
-                    if "优势" in n:
+                if advantage or disadvantage:  # 处理额外优劣势
+                    if advantage:
                         if "d20优势" in final_exp_str:
                             pass
                         elif "d20劣势" in final_exp_str:
                             final_exp_str = final_exp_str.replace("d20劣势", "d20", 1)
                         elif "d20" in final_exp_str:
                             final_exp_str = final_exp_str.replace("d20", "d20优势", 1)
-                    elif "劣势" in n:
+                        n = n[:-2]
+                    elif disadvantage:
                         if "d20劣势" in final_exp_str:
                             pass
                         elif "d20优势" in final_exp_str:
                             final_exp_str = final_exp_str.replace("d20优势", "d20", 1)
                         elif "d20" in final_exp_str:
                             final_exp_str = final_exp_str.replace("d20", "d20劣势", 1)
-                    n = n.replace("优势", "")
-                    n = n.replace("劣势", "")
+                        n = n[:-2]
                 # 尝试处理额外加值, 额外加值必须以+/-开头
                 if "+" in n or "-" in n:
                     add_index = n.find("+") if "+" in n else 2**20
@@ -242,9 +253,14 @@ class InitiativeCommand(UserCommandBase):
                         assert 1 <= num <= 10
                     except (ValueError, AssertionError):
                         return [BotSendMsgCommand(self.bot.account, f"{num}不是一个有效的数字 (1~10)", [port])]
-                    for i in range(num):
-                        # 获取先攻结果
-                        name_dict[n + chr(ord("A") + i)] = roll_exp.get_result()
+                    # 获取先攻名称
+                    placeholders = self.format_loc(LOC_INIT_ENTITY_TEN_PLACEHOLDERS,name=n).strip().split("\n")
+                    if len(placeholders) == 10: # 必须正好10个
+                        for i in range(num):
+                            name_dict[placeholders[i]] = roll_exp.get_result()
+                    else: # 真的么，你居然不是10个
+                        for i in range(num):
+                            name_dict[n + chr(ord("A") + i)] = roll_exp.get_result()
                 else:
                     # 获取先攻结果
                     try:
@@ -254,7 +270,7 @@ class InitiativeCommand(UserCommandBase):
 
             result_dict: Dict[str, Tuple[int, str]] = dict()
             for name, res in name_dict.items():
-                if name == "self" or name == "我" :
+                if name in ["self","我"] :
                     name = self.bot.get_nickname(meta.user_id, meta.group_id)
                 result_dict[name] = (res.get_val(), res.get_complete_result())
 
@@ -291,7 +307,7 @@ class InitiativeCommand(UserCommandBase):
         for entity in init_data.entities:
             if entity.owner:  
                 entity.name = self.bot.get_nickname(entity.owner, meta.group_id)
-        entities_name_list: List[str] = [entity.name for entity in init_data.entities]
+                entity.compatible_name = preprocess_msg(entity.name)
 
         # 处理需要有表存在才能使用的指令
         if mode == "inspect":  # 查看先攻信息
@@ -307,8 +323,8 @@ class InitiativeCommand(UserCommandBase):
                 entity_hp_info: str = ""
                 if entity.owner and entity.owner in hp_dict:  # 玩家HP信息
                     entity_hp_info = f"{hp_dict[entity.owner].get_info()}"
-                if not entity.owner and entity.name in hp_dict:  # NPC信息
-                    entity_hp_info = f"{hp_dict[entity.name].get_info()}"
+                if not entity.owner and entity.compatible_name in hp_dict:  # NPC信息
+                    entity_hp_info = f"{hp_dict[entity.compatible_name].get_info()}"
                 init_info += f"{index + 1}.{entity.get_info()} {entity_hp_info}\n"
             init_info = init_info.strip()  # 去掉末尾的换行
             feedback = self.format_loc(LOC_INIT_INFO, init_info=init_info)
@@ -323,9 +339,9 @@ class InitiativeCommand(UserCommandBase):
                 for entity in init_data.entities:
                     if not entity.owner:
                         try:
-                            hp_info: HPInfo = self.bot.data_manager.get_data(DC_CHAR_HP, [meta.group_id, entity.name])
+                            hp_info: HPInfo = self.bot.data_manager.get_data(DC_CHAR_HP, [meta.group_id, entity.compatible_name])
                             assert hp_info.hp_max == 0  # 不清除已经设置了最大生命值的生命值信息
-                            self.bot.data_manager.delete_data(DC_CHAR_HP, [meta.group_id, entity.name])
+                            self.bot.data_manager.delete_data(DC_CHAR_HP, [meta.group_id, entity.compatible_name])
                         except DataManagerError:  # 没有设置生命值信息
                             pass
                         except AssertionError:  # 已经设置最大生命值
@@ -343,14 +359,14 @@ class InitiativeCommand(UserCommandBase):
 
         elif mode == "first":  # 提前先攻条目
             index = None
-            names, feedback = self.find_valid_entities([arg_str.strip()],entities_name_list)
+            names, feedback = self.find_valid_entities([arg_str.strip()],init_data)
             if feedback != "":
                 return [BotSendMsgCommand(self.bot.account, feedback, [port])]
             # 寻找目标的位置
             name = names[0]
             init_val: int = 0
             for i, entity in enumerate(init_data.entities):
-                if entity.name == name:
+                if entity.compatible_name == name:
                     index = i
                     init_val = entity.init
                     break
@@ -379,8 +395,8 @@ class InitiativeCommand(UserCommandBase):
             name_list_valid_l: List[str]
             name_list_valid_r: List[str]
             feedback_a: str
-            name_list_valid_l, feedback = self.find_valid_entities([swap_target_l],entities_name_list)
-            name_list_valid_r, feedback_a = self.find_valid_entities([swap_target_r],entities_name_list)
+            name_list_valid_l, feedback = self.find_valid_entities([swap_target_l],init_data)
+            name_list_valid_r, feedback_a = self.find_valid_entities([swap_target_r],init_data)
             if feedback != "":
                 feedback = feedback.strip() + "\n" + feedback_a.strip()
             else:
@@ -390,52 +406,76 @@ class InitiativeCommand(UserCommandBase):
                 l_index: int = 0
                 r_index: int = 0
                 for i, entity in enumerate(init_data.entities):
-                    if entity.name == name_list_valid_l[0]:
+                    if entity.compatible_name == name_list_valid_l[0]:
                         l_index = i
-                    elif entity.name == name_list_valid_r[0]:
+                    elif entity.compatible_name == name_list_valid_r[0]:
                         r_index = i
+                feedback = self.format_loc(LOC_INIT_ENTITY_SWAP, name1 = init_data.entities[l_index].name, name2 = init_data.entities[r_index].name)
                 init_data.entities[l_index].init,init_data.entities[r_index].init = init_data.entities[r_index].init,init_data.entities[l_index].init
                 init_data.entities[l_index],init_data.entities[r_index] = init_data.entities[r_index],init_data.entities[l_index]
                 feedback = self.format_loc(LOC_INIT_ENTITY_SWAP, name1 = name_list_valid_l[0], name2 = name_list_valid_r[0])
+            # 检测是否因此更改了回合，是的话提示一下回合变化
+            if not init_data.first_turn and (init_data.turn == l_index+1 or init_data.turn == r_index+1):
+                feedback += "\n" + self.format_loc(LOC_BR_ROUND_SHOW,round=str(init_data.round),turn=str(init_data.turn),turn_name=init_data.entities[init_data.turn-1].name)
             # 错误信息已经给出了
             return [BotSendMsgCommand(self.bot.account, feedback, [port])]
 
         elif mode == "delete":  # 删除先攻条目
             # 在列表中搜索名字, 结果加入到name_list_valid
-            name_list: List[str] = [name.strip() for name in arg_str.split("/")]  # 类似.init del A/B/C 这样的用法
+            arg_str = arg_str.strip()
             name_list_valid: List[str]
-            name_list_valid, feedback = self.find_valid_entities(name_list,entities_name_list)
+            turn_skipped = False
+            if arg_str == "":
+                if not init_data.first_turn:
+                    name_list_valid = [init_data.entities[init_data.turn-1].compatible_name]
+                    turn_skipped = True
+                else:
+                    feedback += self.format_loc(LOC_INIT_ENTITY_NOT_FOUND)
+                    return [BotSendMsgCommand(self.bot.account, feedback, [port])]
+            else:
+                name_list: List[str] = [name.strip() for name in arg_str.split("/")]  # 类似.init del A/B/C 这样的用法
+                name_list_valid, feedback = self.find_valid_entities(name_list,init_data)
             # 删除
             if name_list_valid:
                 name_list_deleted: List[str] = []
                 for v_name in name_list_valid:
                     # 删除生命值信息
-                    index = None
+                    index = -1
                     for i, entity in enumerate(init_data.entities):
-                        if entity.name == v_name:
+                        if entity.name == v_name or entity.compatible_name == v_name:
                             index = i
+                            if index == init_data.turn-1:
+                                turn_skipped = True
                             break
                     if not init_data.entities[index].owner:
                         try:
                             from module.character.dnd5e import DC_CHAR_HP
-                            self.bot.data_manager.delete_data(DC_CHAR_HP, [meta.group_id, v_name])
+                            self.bot.data_manager.delete_data(DC_CHAR_HP, [meta.group_id, entity.name])
                         except (ImportError, DataManagerError):  # 没有设置生命值信息
                             pass
                     # 删除先攻信息
                     try:
+                        name_list_deleted.append(str(entity.name))
                         init_data.del_entity(v_name)
-                        name_list_deleted.append(v_name)
                     except InitiativeError as e:
                         feedback += self.format_loc(LOC_INIT_ERROR, error_info=e.info) + "\n"
                 if name_list_deleted:
-                    for name in name_list_deleted:
-                        feedback += self.format_loc(LOC_INIT_INFO_DEL, entity_list=name)
-            feedback = feedback.strip()
+                    if arg_str == "":
+                        feedback += self.format_loc(LOC_INIT_INFO_DEL_THIS_TURN, entity=name_list_deleted[0])
+                    else:
+                        feedback += self.format_loc(LOC_INIT_INFO_DEL, entity_list="、".join(name_list_deleted))
+                    # 检测是否因此更改了回合，是的话提示一下回合变化
+                    if not init_data.first_turn and init_data.turns_in_round > 0 and turn_skipped:
+                        if init_data.turn > init_data.turns_in_round:
+                            init_data.round += 1
+                            init_data.turn = 1
+                        feedback += "\n" + self.format_loc(LOC_BR_ROUND_SHOW,round=str(init_data.round),turn=str(init_data.turn),turn_name=init_data.entities[init_data.turn-1].name)
+                feedback = feedback.strip()
             return [BotSendMsgCommand(self.bot.account, feedback, [port])]
 
     def get_help(self, keyword: str, meta: MessageMetaData) -> str:
         if keyword == "init" or keyword == "先攻":
-            help_str = "显示先攻列表：.init ([可选指令]) [可选指令]:clr 清空先攻列表 del 删除指定先攻条目\n" \
+            help_str = "显示先攻列表：.init ([可选指令]) [可选指令]:clr 清空先攻列表 del 删除指定先攻条目 fst 稍微提前先攻条目 swap 交互先攻条目\n" \
                        "del指令支持部分匹配\n" \
                        "hp信息也会在先攻列表上显示\n" \
                        "示例:\n" \
@@ -461,8 +501,9 @@ class InitiativeCommand(UserCommandBase):
     def get_description(self) -> str:
         return ".ri 投掷先攻 .init 操作先攻列表"
     
-    def find_valid_entities(self,name_list: List[str],global_list: List[str]) -> Tuple[List[str],str]:
+    def find_valid_entities(self,name_list: List[str],init_data: InitList) -> Tuple[List[str],str]:
         # O(N*M)暴力搜索寻找匹配对象
+        global_list = [entity.compatible_name for index, entity in enumerate(init_data.entities)]
         result_list: List[str] = []
         feedback: str = ""
         for name in name_list:
@@ -472,13 +513,14 @@ class InitiativeCommand(UserCommandBase):
             elif match_num == 0:  # 没有同名条目, 进入模糊搜索
                 possible_res: List[str] = match_substring(name, global_list)
                 if len(possible_res) == 0:  # 还是没有结果, 提示用户
-                    feedback += self.format_loc(LOC_INIT_ENTITY_NOT_FOUND, name=name) + "\n"
+                    feedback += self.format_loc(LOC_INIT_ENTITY_NOT_FOUND) + "\n"
                 elif len(possible_res) > 1:  # 多个可能的结果, 提示用户
-                    feedback += self.format_loc(LOC_INIT_ENTITY_VAGUE, name=name, name_list=possible_res) + "\n"
+                    possible_name = [init_data.find_entity(res).name for res in possible_res]
+                    feedback += self.format_loc(LOC_INIT_ENTITY_VAGUE, name_list=possible_name) + "\n"
                 elif len(possible_res) == 1:
                     result_list.append(possible_res[0])
             else: #if match_num > 1:  # 多于一个同名条目, 按设计是不可能出现的, 需要排查原因
-                feedback += self.format_loc(LOC_INIT_ERROR, error_info=f"列表中存在同名条目{name}, 联系开发者") + "\n"
+                feedback += self.format_loc(LOC_INIT_ERROR, error_info=f"列表中存在同名条目{name}, 请联系开发者") + "\n"
         return (result_list,feedback)
 
     def add_initiative_entities(self, result_dict: Dict[str, Tuple[int, str]], owner_id: str, group_id: str) -> str:
@@ -503,26 +545,21 @@ class InitiativeCommand(UserCommandBase):
             final_result_dict[roll_res[1]][0].append(name)
         repeatted : bool = False
         feedback = ""
-        same_warn: str = ""
+        same_warn: Dict[int,List[str]] = {}
         feedback_list = []
         for roll_res_str, (name_list, roll_val) in final_result_dict.items():
             is_valid = True
-            has_same= False
-            same = []
             for name in name_list:
                 try:
                     for entity in init_data.entities:
-                        if entity.name == name:  # 检查有没有同名条目, 有则提示重复
+                        if entity.name == name or entity.compatible_name == name:  # 检查有没有同名条目, 有则提示重复
                             repeatted = True
-                        if entity.init == roll_val:  # 检查有没有同值, 有则提示相同，让DM确定先后
-                            has_same = True
-                            same.append(entity.name)
+                        elif entity.init == roll_val:  # 检查有没有同值, 有则提示相同，让DM确定先后
+                            if roll_val not in same_warn.keys(): # 若存在相同的，则增加一段相同提示
+                                same_warn[roll_val] = [name,entity.name]
+                            elif entity.name not in same_warn[roll_val]:
+                                same_warn[roll_val].append(entity.name)
                     init_data.add_entity(name, owner_id, roll_val)
-                    if has_same: # 若存在相同的，则增加一段相同提示
-                        sames = ""
-                        for same_name in same :
-                            sames += " / " + same_name
-                        same_warn += "\n" + self.format_loc(LOC_INIT_ENTITY_SAME_LIST, entity_list = name + sames)
                 except InitiativeError as e:
                     is_valid = False
                     feedback_list.append(self.format_loc(LOC_INIT_ERROR, error_info=e.info))
@@ -531,6 +568,7 @@ class InitiativeCommand(UserCommandBase):
         if repeatted :
             feedback += self.format_loc(LOC_INIT_ENTITY_REPEAT)
         feedback += "\n".join(feedback_list)
-        if same_warn:
-            feedback += "\n" + self.format_loc(LOC_INIT_ENTITY_SAME) + same_warn
+        if len(same_warn) > 0:
+            same_warn_feedback = "\n".join([self.format_loc(LOC_INIT_ENTITY_SAME_LIST, entity_list =" / ".join(entities)) for entities in same_warn.values()])
+            feedback += "\n" + self.format_loc(LOC_INIT_ENTITY_SAME) + "\n" + same_warn_feedback
         return feedback
